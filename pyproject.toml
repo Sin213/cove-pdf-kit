@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cove-pdf-kit"
+version = "1.0.0"
+description = "Offline PDF toolkit — organize, compress, and protect PDFs without the cloud"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Cove" }]
+dependencies = [
+    "PySide6>=6.6",
+    "pypdf>=5.0",
+    "pikepdf>=9.0",
+    "pypdfium2>=5.0",
+    "Pillow>=10.0",
+]
+
+[project.scripts]
+cove-pdf-kit = "cove_pdf_kit.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cove_pdf_kit = ["assets/*.png", "assets/*.ico"]

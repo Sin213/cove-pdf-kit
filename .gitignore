@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Build / packaging
+build/
+dist/
+release/
+*.spec.bak
+cove_icon.ico
+.buildenv/
+
+# AppImage / dpkg working dirs
+AppDir/
+*.AppDir/
+deb-build/
+
+# Logs / caches
+*.log
+.cache/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

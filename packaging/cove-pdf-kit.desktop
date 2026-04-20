@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Cove PDF Kit
+GenericName=Offline PDF Toolkit
+Comment=Merge, split, reorder, compress, and protect PDFs — fully offline
+Exec=cove-pdf-kit
+Icon=cove-pdf-kit
+Terminal=false
+Categories=Office;Utility;
+Keywords=pdf;merge;split;compress;rotate;encrypt;password;
+StartupNotify=true
+MimeType=application/pdf;
