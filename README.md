@@ -4,8 +4,6 @@ A focused, offline PDF toolkit for **Linux** and **Windows**. No cloud,
 no uploads, no account — drop your PDFs in, rearrange them, compress
 them, protect them, done.
 
-![icon](cove_icon.png)
-
 ## Download (v1.0.0)
 
 | Platform | File |
