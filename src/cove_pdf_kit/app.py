@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QFrame,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import __version__, updater
 from .compress import CompressView
 from .organize import OrganizeView
 from .protect import ProtectView
@@ -44,7 +45,7 @@ QPushButton:checked { background: #1f3a5c; color: #ffffff; font-weight: 600; }
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Cove PDF Kit")
+        self.setWindowTitle(f"Cove PDF Kit v{__version__}")
         self.resize(1100, 760)
         if ICON_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PATH)))
@@ -52,6 +53,15 @@ class MainWindow(QMainWindow):
         self._thumbs = ThumbnailService(self)
 
         self._build_ui()
+
+        self._updater = updater.UpdateController(
+            parent=self,
+            current_version=__version__,
+            repo="Sin213/cove-pdf-kit",
+            app_display_name="Cove PDF Kit",
+            cache_subdir="cove-pdf-kit",
+        )
+        QTimer.singleShot(4000, self._updater.check)
 
     def _build_ui(self) -> None:
         central = QWidget()
