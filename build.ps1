@@ -17,11 +17,30 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version = "1.0.0"
+    # Default of "" means "read it from pyproject.toml" — see below. We
+    # can't put the read in the default expression because PowerShell
+    # parameter defaults must be constant.
+    [string]$Version = ""
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+if (-not $Version) {
+    # Single source of truth: pyproject.toml. If neither -Version nor a
+    # readable pyproject is available, refuse to build instead of shipping
+    # a misleading 0.0.0 artifact.
+    $pyproject = Join-Path $PSScriptRoot "pyproject.toml"
+    if (-not (Test-Path $pyproject)) {
+        throw "build.ps1: pyproject.toml not found at $pyproject. Pass -Version <x.y.z> to override."
+    }
+    $match = Select-String -Path $pyproject -Pattern '^version\s*=\s*"([^"]+)"' |
+             Select-Object -First 1
+    if (-not $match) {
+        throw "build.ps1: could not parse 'version = `"...`"' from pyproject.toml. Pass -Version <x.y.z> to override."
+    }
+    $Version = $match.Matches[0].Groups[1].Value
+}
 
 $App        = "cove-pdf-kit"
 $ReleaseDir = "release"

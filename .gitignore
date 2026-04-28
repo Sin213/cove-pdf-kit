@@ -29,3 +29,15 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Wine cross-build cache (Ghostscript installer + extracted tree)
+.winebuild/gs-cache/
+
+# Local-only state — never tracked
+.claude/
+codex-reviews/
+
+# Stray PyInstaller-generated spec files at repo root (the canonical
+# spec lives in packaging/).
+/cove-pdf-kit.spec
+/cove-pdf-kit-portable.spec

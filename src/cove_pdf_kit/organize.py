@@ -15,7 +15,9 @@ from PySide6.QtGui import (
     QDropEvent,
     QIcon,
     QImage,
+    QKeySequence,
     QPixmap,
+    QShortcut,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -26,17 +28,21 @@ from PySide6.QtWidgets import (
     QListView,
     QMenu,
     QMessageBox,
-    QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from . import theme
+from .icons import make_pixmap
 from .pdf_ops import PageRef, read_page_count, write_merged
 from .rendering import ThumbnailService
+from .system import reveal_in_file_manager
+from .widgets import Divider, DropZone, StatusPill, make_button
 
 
-THUMB_WIDTH = 160  # device pixels
-THUMB_HEIGHT = 220
+THUMB_WIDTH = 184
+THUMB_HEIGHT = 244
 
 
 class PageModel(QAbstractListModel):
@@ -48,8 +54,6 @@ class PageModel(QAbstractListModel):
         super().__init__(parent)
         self._pages: list[PageRef] = []
         self._thumbs = thumbs
-        # Cache and request-tracking keyed by PageRef so row moves / deletes
-        # don't invalidate already-rendered thumbnails.
         self._tokens: dict[int, PageRef] = {}
         self._icons: dict[PageRef, QIcon] = {}
         self._requested: set[PageRef] = set()
@@ -85,9 +89,6 @@ class PageModel(QAbstractListModel):
         return Qt.MoveAction
 
     # --- Drag-drop (InternalMove) ----------------------------------
-    #
-    # QListView's InternalMove does DnD via mime data; the model has to
-    # serialize the dragged rows, then apply a row-wise move on drop.
 
     MIME = "application/x-cove-pdf-kit-rows"
 
@@ -107,16 +108,12 @@ class PageModel(QAbstractListModel):
         src_rows = [int(x) for x in bytes(data.data(self.MIME)).decode().split(",") if x]
         if not src_rows:
             return False
-        # Target row: row < 0 means dropped after last
         dest = row if row >= 0 else len(self._pages)
-        # Pull source pages out in original order.
         moving = [self._pages[r] for r in src_rows]
-        # Remove from the end of the list first so earlier indices stay valid.
         for r in sorted(src_rows, reverse=True):
             self.beginRemoveRows(QModelIndex(), r, r)
             del self._pages[r]
             self.endRemoveRows()
-            # Adjust dest if rows before it were removed.
             if r < dest:
                 dest -= 1
         dest = max(0, min(len(self._pages), dest))
@@ -126,8 +123,6 @@ class PageModel(QAbstractListModel):
         self.endInsertRows()
         return True
 
-    # We do the removal inside dropMimeData, so tell the view not to call
-    # removeRows afterwards.
     def removeRows(self, row: int, count: int, parent: QModelIndex = QModelIndex()) -> bool:
         if parent.isValid():
             return False
@@ -141,8 +136,6 @@ class PageModel(QAbstractListModel):
     # --- Public mutation API ---------------------------------------
 
     def add_pdf(self, path: Path) -> int:
-        """Append every page of ``path`` to the model. Returns the number
-        of pages added."""
         try:
             n = read_page_count(path)
         except PermissionError:
@@ -174,6 +167,9 @@ class PageModel(QAbstractListModel):
     def pages_at(self, rows: list[int]) -> list[PageRef]:
         return [self._pages[r] for r in rows if 0 <= r < len(self._pages)]
 
+    def unique_sources(self) -> int:
+        return len({p.source for p in self._pages})
+
     def clear(self) -> None:
         if not self._pages:
             return
@@ -201,8 +197,6 @@ class PageModel(QAbstractListModel):
             THUMB_WIDTH, THUMB_HEIGHT, Qt.KeepAspectRatio, Qt.SmoothTransformation,
         )
         self._icons[ref] = QIcon(QPixmap.fromImage(scaled))
-        # Poke every row that currently maps to this ref so the view picks
-        # up the new icon.
         for r, p in enumerate(self._pages):
             if p == ref:
                 idx = self.index(r)
@@ -211,58 +205,140 @@ class PageModel(QAbstractListModel):
 
 def _placeholder_icon() -> QIcon:
     pix = QPixmap(THUMB_WIDTH, THUMB_HEIGHT)
-    pix.fill(Qt.gray)
+    pix.fill(QPixmap(0, 0).toImage().pixelColor(0, 0)
+             if False else  # keep the type checker quiet
+             Qt.transparent)
+    pix.fill(Qt.transparent)
+    from PySide6.QtGui import QPainter, QColor, QLinearGradient
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    grad = QLinearGradient(0, 0, 0, THUMB_HEIGHT)
+    grad.setColorAt(0.0, QColor("#1d1d28"))
+    grad.setColorAt(1.0, QColor("#14141d"))
+    p.setBrush(grad)
+    p.setPen(QColor(255, 255, 255, 12))
+    p.drawRoundedRect(0, 0, THUMB_WIDTH - 1, THUMB_HEIGHT - 1, 6, 6)
+    p.end()
     return QIcon(pix)
 
 
 class OrganizeView(QWidget):
-    statusMessage = Signal(str, int)   # text, timeout ms
+    statusMessage = Signal(str, int)
+    itemsChanged = Signal(int)   # unique source count
 
     def __init__(self, thumbs: ThumbnailService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._thumbs = thumbs
+        self._last_export_path: Path | None = None
         self._model = PageModel(thumbs, self)
         self._build_ui()
         self.setAcceptDrops(True)
+        self._update_state()
+        self._model.rowsInserted.connect(self._update_state)
+        self._model.rowsRemoved.connect(self._update_state)
+        self._model.modelReset.connect(self._update_state)
+
+        # Delete key removes the current selection. Scoped to this widget
+        # so the rest of the app isn't affected.
+        del_sc = QShortcut(QKeySequence(Qt.Key_Delete), self)
+        del_sc.setContext(Qt.WidgetWithChildrenShortcut)
+        del_sc.activated.connect(self._delete_selection)
+        backspace_sc = QShortcut(QKeySequence(Qt.Key_Backspace), self)
+        backspace_sc.setContext(Qt.WidgetWithChildrenShortcut)
+        backspace_sc.activated.connect(self._delete_selection)
+
+    # --- UI build --------------------------------------------------
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(8)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        toolbar = QHBoxLayout()
-        self.add_btn = QPushButton("Add PDFs…")
+        root.addWidget(self._build_head())
+        root.addWidget(self._build_content(), stretch=1)
+        root.addWidget(self._build_statusbar())
+
+    def _build_head(self) -> QWidget:
+        head = QWidget()
+        head.setObjectName("cove-head")
+        layout = QVBoxLayout(head)
+        layout.setContentsMargins(24, 18, 24, 14)
+        layout.setSpacing(12)
+
+        # Row 1 — toolbar.
+        row1 = QHBoxLayout()
+        row1.setSpacing(6)
+        self.add_btn       = make_button("Add PDFs…", icon="plus")
         self.add_btn.clicked.connect(self._on_add_clicked)
-        self.rot_left_btn = QPushButton("Rotate ↺")
+        self.rot_left_btn  = make_button("Rotate ↶", icon="rotate_ccw")
         self.rot_left_btn.clicked.connect(lambda: self._rotate_selection(-90))
-        self.rot_right_btn = QPushButton("Rotate ↻")
+        self.rot_right_btn = make_button("Rotate ↷", icon="rotate_cw")
         self.rot_right_btn.clicked.connect(lambda: self._rotate_selection(90))
-        self.delete_btn = QPushButton("Delete")
+        self.delete_btn    = make_button("Delete", icon="trash", kind="danger-ghost")
         self.delete_btn.clicked.connect(self._delete_selection)
-        self.clear_btn = QPushButton("Clear all")
+        self.clear_btn     = make_button("Clear all")
         self.clear_btn.clicked.connect(self._on_clear)
-        self.export_btn = QPushButton("Export PDF…")
-        self.export_btn.setStyleSheet(
-            "QPushButton { background:#2563eb; color:white; font-weight:600; "
-            "border:none; border-radius:6px; padding:6px 14px; }"
-            "QPushButton:hover { background:#1d4ed8; }"
-            "QPushButton:disabled { background:#3a4150; color:#9aa0ad; }"
-        )
-        self.export_btn.clicked.connect(self._on_export)
-        self.export_selected_btn = QPushButton("Export selection…")
-        self.export_selected_btn.clicked.connect(self._on_export_selection)
-        toolbar.addWidget(self.add_btn)
-        toolbar.addSpacing(8)
-        toolbar.addWidget(self.rot_left_btn)
-        toolbar.addWidget(self.rot_right_btn)
-        toolbar.addWidget(self.delete_btn)
-        toolbar.addSpacing(8)
-        toolbar.addWidget(self.clear_btn)
-        toolbar.addStretch(1)
-        toolbar.addWidget(self.export_selected_btn)
-        toolbar.addWidget(self.export_btn)
-        root.addLayout(toolbar)
 
+        row1.addWidget(self.add_btn)
+        row1.addSpacing(2)
+        row1.addWidget(Divider())
+        row1.addSpacing(2)
+        row1.addWidget(self.rot_left_btn)
+        row1.addWidget(self.rot_right_btn)
+        row1.addWidget(self.delete_btn)
+        row1.addWidget(self.clear_btn)
+        row1.addStretch(1)
+
+        self.export_sel_btn = make_button("Export selection…", icon="download", kind="outline")
+        self.export_sel_btn.clicked.connect(self._on_export_selection)
+        self.export_btn     = make_button("Export PDF…", icon="download", kind="primary")
+        self.export_btn.clicked.connect(self._on_export)
+        row1.addWidget(self.export_sel_btn)
+        row1.addWidget(self.export_btn)
+        layout.addLayout(row1)
+
+        # Row 2 — pills + drag hint.
+        row2 = QHBoxLayout()
+        row2.setSpacing(12)
+        self.count_pill = StatusPill("0 files")
+        self.sel_pill   = StatusPill("0 selected", accent=True)
+        self.sel_pill.hide()
+        row2.addWidget(self.count_pill)
+        row2.addWidget(self.sel_pill)
+        row2.addStretch(1)
+        self.show_folder_btn = make_button("Show folder", icon="upload", kind="outline")
+        self.show_folder_btn.setMinimumHeight(28)
+        self.show_folder_btn.clicked.connect(self._on_show_folder)
+        self.show_folder_btn.hide()
+        row2.addWidget(self.show_folder_btn)
+        hint = QLabel(
+            "Drag thumbnails to reorder · right-click for rotate / delete / split"
+        )
+        hint.setProperty("role", "hint")
+        row2.addWidget(hint)
+        layout.addLayout(row2)
+        return head
+
+    def _build_content(self) -> QWidget:
+        wrapper = QWidget()
+        wrapper.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(24, 16, 24, 16)
+        layout.setSpacing(0)
+
+        self._stack = QStackedWidget()
+
+        # Empty state — drop zone.
+        self._dropzone = DropZone(
+            glyph="drop_doc",
+            headline='Drop PDFs here, or click "Add PDFs…"',
+            body="Then drag the thumbnails to reorder, right-click for rotate / delete / split.",
+        )
+        self._dropzone.clicked.connect(self._on_add_clicked)
+        self._dropzone.filesDropped.connect(self._on_files_dropped)
+        self._stack.addWidget(self._dropzone)
+
+        # Loaded state — page grid.
         self.view = QListView()
         self.view.setModel(self._model)
         self.view.setViewMode(QListView.IconMode)
@@ -272,34 +348,64 @@ class OrganizeView(QWidget):
         self.view.setMovement(QListView.Snap)
         self.view.setUniformItemSizes(True)
         self.view.setIconSize(QSize(THUMB_WIDTH, THUMB_HEIGHT))
-        self.view.setSpacing(10)
+        self.view.setSpacing(14)
         self.view.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.view.setDragDropMode(QAbstractItemView.InternalMove)
         self.view.setDefaultDropAction(Qt.MoveAction)
         self.view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._on_context_menu)
+        self.view.selectionModel().selectionChanged.connect(self._update_state)
         self.view.setStyleSheet(
-            "QListView { background:#0e1116; border:1px solid #2a2f3a; border-radius:6px; }"
-            "QListView::item { color:#cfd0d4; padding:4px; }"
-            "QListView::item:selected { background:#1f3a5c; border-radius:4px; }"
+            f"QListView {{ background: transparent; border: none;"
+            f" color: {theme.TEXT}; outline: 0;"
+            f" padding: 4px;"
+            f"}}"
+            f"QListView::item {{"
+            f" border: 1px solid {theme.BORDER};"
+            f" border-radius: 10px;"
+            f" background: {theme.SURFACE};"
+            f" color: {theme.TEXT};"
+            f" padding: 6px;"
+            f"}}"
+            f"QListView::item:hover {{"
+            f" border-color: {theme.BORDER_STRONG};"
+            f"}}"
+            f"QListView::item:selected {{"
+            f" border: 1px solid {theme.ACCENT};"
+            f" background: {theme.ACCENT_SOFT};"
+            f"}}"
         )
+        self._stack.addWidget(self.view)
 
-        self.placeholder = QLabel(
-            "Drop PDFs here, or click \"Add PDFs…\"\n"
-            "Then drag the thumbnails to reorder, right-click for rotate / delete / split."
+        layout.addWidget(self._stack, stretch=1)
+        return wrapper
+
+    def _build_statusbar(self) -> QWidget:
+        bar = QWidget()
+        bar.setFixedHeight(26)
+        bar.setStyleSheet(
+            f"background: rgba(255,255,255,0.012);"
+            f"border-top: 1px solid {theme.BORDER};"
         )
-        self.placeholder.setAlignment(Qt.AlignCenter)
-        self.placeholder.setStyleSheet(
-            "color:#7a8294; font-size:14px; padding:48px;"
-            "border:2px dashed #4a5160; border-radius:8px; background:#14181f;"
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setSpacing(10)
+        from .app import _PulseDot  # late import to avoid cycle
+        layout.addWidget(_PulseDot(theme.GOOD, 6))
+        self._status_lbl = QLabel("Ready")
+        self._status_lbl.setStyleSheet(
+            f"color: {theme.TEXT_FAINT};"
+            f"font-family: '{theme.FONT_MONO}', monospace;"
+            f"font-size: 10.5px;"
+            f"letter-spacing: 0.04em;"
+            f"background: transparent;"
         )
-        root.addWidget(self.placeholder, stretch=1)
-        root.addWidget(self.view, stretch=1)
-        self.view.hide()
-        self._update_controls()
-        self._model.rowsInserted.connect(self._update_controls)
-        self._model.rowsRemoved.connect(self._update_controls)
-        self._model.modelReset.connect(self._update_controls)
+        layout.addWidget(self._status_lbl)
+        layout.addStretch(1)
+        self._totals_lbl = QLabel("0 files · 0 pages total")
+        self._totals_lbl.setStyleSheet(self._status_lbl.styleSheet())
+        layout.addWidget(self._totals_lbl)
+        return bar
 
     # --- actions ----------------------------------------------------
 
@@ -307,6 +413,10 @@ class OrganizeView(QWidget):
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Add PDFs", "", "PDF files (*.pdf);;All files (*)",
         )
+        for p in paths:
+            self._add_path(Path(p))
+
+    def _on_files_dropped(self, paths: list[str]) -> None:
         for p in paths:
             self._add_path(Path(p))
 
@@ -372,13 +482,19 @@ class OrganizeView(QWidget):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Save failed", str(exc))
             return
+        self._last_export_path = Path(out_path)
+        self.show_folder_btn.show()
+        self._status_lbl.setText(f"Saved {Path(out_path).name}")
         self.statusMessage.emit(f"Saved {Path(out_path).name} ({len(pages)} pages)", 6000)
+
+    def _on_show_folder(self) -> None:
+        if self._last_export_path is not None:
+            reveal_in_file_manager(self._last_export_path)
 
     def _on_context_menu(self, pos) -> None:  # noqa: ANN001
         idx = self.view.indexAt(pos)
         if not idx.isValid():
             return
-        # Ensure the clicked row is included in the selection.
         if idx not in self.view.selectedIndexes():
             self.view.clearSelection()
             self.view.setCurrentIndex(idx)
@@ -410,12 +526,38 @@ class OrganizeView(QWidget):
 
     # --- UI state ---------------------------------------------------
 
-    def _update_controls(self, *_a, **_kw) -> None:  # noqa: ANN001
-        has_pages = self._model.rowCount() > 0
-        self.view.setVisible(has_pages)
-        self.placeholder.setVisible(not has_pages)
-        for btn in (
-            self.rot_left_btn, self.rot_right_btn, self.delete_btn,
-            self.clear_btn, self.export_btn, self.export_selected_btn,
-        ):
-            btn.setEnabled(has_pages)
+    def _update_state(self, *_a, **_kw) -> None:  # noqa: ANN001
+        n_pages = self._model.rowCount()
+        n_sources = self._model.unique_sources()
+        n_selected = len(self._selected_rows()) if hasattr(self, "view") else 0
+
+        # Stack state.
+        self._stack.setCurrentIndex(1 if n_pages > 0 else 0)
+
+        has_pages = n_pages > 0
+        has_sel = n_selected > 0
+
+        for btn in (self.rot_left_btn, self.rot_right_btn, self.delete_btn):
+            btn.setEnabled(has_sel)
+        self.clear_btn.setEnabled(has_pages)
+        self.export_btn.setEnabled(has_pages)
+        self.export_sel_btn.setEnabled(has_sel)
+
+        # Pills.
+        self.count_pill.setText(
+            f"{n_sources} file{'s' if n_sources != 1 else ''}"
+        )
+        if has_sel:
+            self.sel_pill.setText(f"{n_selected} selected")
+            self.sel_pill.show()
+        else:
+            self.sel_pill.hide()
+
+        # Status totals.
+        self._totals_lbl.setText(
+            f"{n_sources} file{'s' if n_sources != 1 else ''} · "
+            f"{n_pages} page{'s' if n_pages != 1 else ''} total"
+        )
+
+        # Sidebar count.
+        self.itemsChanged.emit(n_sources)

@@ -14,7 +14,24 @@ cd "$ROOT"
 
 APP_NAME="cove-pdf-kit"
 DISPLAY_NAME="Cove PDF Kit"
-VERSION="${VERSION:-1.0.0}"
+# Single source of truth for the version — read from pyproject.toml so the
+# Python package and the shipped artifacts can never diverge. If the
+# caller didn't supply VERSION explicitly AND we can't parse pyproject,
+# refuse to build rather than ship a misleading 0.0.0 artifact.
+if [ -z "${VERSION:-}" ]; then
+    if [ ! -f "$ROOT/pyproject.toml" ]; then
+        echo "build-release.sh: pyproject.toml not found at $ROOT/pyproject.toml" >&2
+        echo "                  set VERSION=<x.y.z> to override" >&2
+        exit 2
+    fi
+    PYPROJECT_VERSION="$(awk -F'"' '/^version[[:space:]]*=/ { print $2; exit }' "$ROOT/pyproject.toml")"
+    if [ -z "$PYPROJECT_VERSION" ]; then
+        echo "build-release.sh: could not parse 'version = \"…\"' from pyproject.toml" >&2
+        echo "                  set VERSION=<x.y.z> to override" >&2
+        exit 2
+    fi
+    VERSION="$PYPROJECT_VERSION"
+fi
 ARCH="x86_64"
 DEB_ARCH="amd64"
 RELEASE_DIR="$ROOT/release"
