@@ -96,6 +96,8 @@ class ThumbnailService(QObject):
         self._thread.start()
 
         self._cache: dict[tuple, QImage] = {}
+        self._cache_keys: list[tuple] = []   # insertion-order tracker for eviction
+        self._cache_max = 200
         self._pending: dict[int, tuple] = {}
         self._next_token = 1
 
@@ -113,6 +115,7 @@ class ThumbnailService(QObject):
 
     def close_source(self, source: Path) -> None:
         self._cache = {k: v for k, v in self._cache.items() if k[0] != source}
+        self._cache_keys = [k for k in self._cache_keys if k[0] != source]
         self._close_source.emit(source)
 
     def shutdown(self) -> None:
@@ -122,6 +125,11 @@ class ThumbnailService(QObject):
 
     def _on_rendered(self, token: int, image: QImage) -> None:
         key = self._pending.pop(token, None)
-        if key is not None:
+        if key is not None and key not in self._cache:
+            # Evict oldest entries when the cache is at capacity.
+            while len(self._cache) >= self._cache_max and self._cache_keys:
+                oldest = self._cache_keys.pop(0)
+                self._cache.pop(oldest, None)
             self._cache[key] = image
+            self._cache_keys.append(key)
         self.rendered.emit(token, image)

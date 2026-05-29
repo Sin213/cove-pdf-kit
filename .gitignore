@@ -36,8 +36,21 @@ Thumbs.db
 # Local-only state — never tracked
 .claude/
 codex-reviews/
+.audit/
+
+# Personal agent / workflow config
+CLAUDE.md
+WORKFLOW.md
+RELEASES.md
 
 # Stray PyInstaller-generated spec files at repo root (the canonical
 # spec lives in packaging/).
 /cove-pdf-kit.spec
 /cove-pdf-kit-portable.spec
+AGENTS.md
+.claudeignore
+
+.codex-reviews/
+
+# Session aids (orientation snapshots)
+*-orientation.md

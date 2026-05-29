@@ -1,14 +1,15 @@
 """Protect tool: add or remove a password from one or more PDFs.
 
-Both operations are fast (pikepdf rewrites the PDF trailer, not the
-content) so they run on the UI thread, but progress is still surfaced
-per-file so the user gets feedback on multi-file batches.
+Encrypt/decrypt operations run on a background QThread so the UI event
+loop is never blocked, even for large or batch PDF operations.  Progress
+is surfaced per-file via Qt signals so the progress bar and status labels
+stay responsive.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -30,6 +31,43 @@ from .system import reveal_in_file_manager
 from .widgets import DropZone, FileItem, FileListWidget, make_button
 
 
+class _CryptWorker(QObject):
+    """Runs one encrypt or decrypt call on a background thread.
+
+    Signals are emitted back to the UI thread via Qt's queued-connection
+    mechanism, so all widget updates stay on the main thread.
+    """
+
+    # Emitted when the file finished successfully; carries the output filename.
+    succeeded = Signal(str)
+    # Emitted on failure; carries the error description.
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        mode: str,
+        src: Path,
+        dst: Path,
+        password: str,
+    ) -> None:
+        super().__init__()
+        self._mode = mode
+        self._src = src
+        self._dst = dst
+        self._password = password
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            if self._mode == "add":
+                encrypt(self._src, self._dst, user_password=self._password)
+            else:
+                decrypt(self._src, self._dst, password=self._password)
+            self.succeeded.emit(self._dst.name)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(f"{self._src.name}: {exc}")
+
+
 class ProtectView(QWidget):
     statusMessage = Signal(str, int)
     itemsChanged = Signal(int)
@@ -42,6 +80,9 @@ class ProtectView(QWidget):
         self._show_pw = False
         self._running = False
         self._last_out_dir: Path | None = None
+        # Background-thread state (populated during a run).
+        self._crypt_thread: QThread | None = None
+        self._crypt_worker: _CryptWorker | None = None
         self._build_ui()
         self.setAcceptDrops(True)
         self._update_state()
@@ -386,13 +427,11 @@ class ProtectView(QWidget):
         for i in range(len(self._items)):
             self._file_list.update_status(i, "run" if i == 0 else "queued")
 
-        # Run synchronously but yield to the event loop between files so
-        # the progress bar updates.
         self._batch_pw = password
         self._batch_idx = 0
         self._batch_successes: list[str] = []
         self._batch_failures: list[str] = []
-        QTimer.singleShot(0, self._run_next)
+        self._run_next()
 
     def _run_next(self) -> None:
         i = self._batch_idx
@@ -410,22 +449,42 @@ class ProtectView(QWidget):
         )
         suffix = "-protected" if mode == "add" else "-unprotected"
         dst = src.with_name(f"{src.stem}{suffix}.pdf")
-        try:
-            if mode == "add":
-                encrypt(src, dst, user_password=self._batch_pw)
-            else:
-                decrypt(src, dst, password=self._batch_pw)
-            self._batch_successes.append(dst.name)
-            self._file_list.update_status(i, "done")
-        except Exception as exc:  # noqa: BLE001
-            self._batch_failures.append(f"{src.name}: {exc}")
-            self._file_list.update_status(i, "idle")
+
+        # Dispatch the blocking I/O to a fresh background QThread.
+        worker = _CryptWorker(mode, src, dst, self._batch_pw)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        worker.succeeded.connect(self._on_file_done, Qt.QueuedConnection)
+        worker.failed.connect(self._on_file_failed, Qt.QueuedConnection)
+        thread.started.connect(worker.run)
+        # Clean up thread once the worker slot returns.
+        worker.succeeded.connect(thread.quit, Qt.QueuedConnection)
+        worker.failed.connect(thread.quit, Qt.QueuedConnection)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._crypt_thread = thread
+        self._crypt_worker = worker
+        thread.start()
+
+    def _on_file_done(self, out_name: str) -> None:
+        i = self._batch_idx
+        self._batch_successes.append(out_name)
+        self._file_list.update_status(i, "done")
+        self._advance_batch()
+
+    def _on_file_failed(self, err: str) -> None:
+        i = self._batch_idx
+        self._batch_failures.append(err)
+        self._file_list.update_status(i, "idle")
+        self._advance_batch()
+
+    def _advance_batch(self) -> None:
         self._batch_idx += 1
         self.progress.setValue(self._batch_idx)
         total = max(1, len(self._batch_sources))
         pct = int(round(self._batch_idx / total * 100))
         self._pct_lbl.setText(f"{pct}%")
-        QTimer.singleShot(0, self._run_next)
+        self._run_next()
 
     def _finalize_run(self) -> None:
         self._running = False

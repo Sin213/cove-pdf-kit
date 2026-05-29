@@ -10,6 +10,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
+# Module-level cache: (name, size, color, stroke, dpr) -> QPixmap
+# Avoids rebuilding the SVG template and re-rasterizing on every call.
+_PIXMAP_CACHE: dict[tuple, QPixmap] = {}
+
 
 # 24×24 viewBox; stroke="currentColor" is replaced at render time.
 _SVG_PATHS = {
@@ -91,6 +95,10 @@ def _svg(paths: str, color: str, stroke: float) -> str:
 
 def make_pixmap(name: str, size: int = 16, color: str = "#9a9aae",
                 stroke: float = 1.8, dpr: float = 1.0) -> QPixmap:
+    cache_key = (name, size, color, stroke, dpr)
+    cached = _PIXMAP_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     paths = _SVG_PATHS.get(name)
     if paths is None:
         return QPixmap()
@@ -104,6 +112,7 @@ def make_pixmap(name: str, size: int = 16, color: str = "#9a9aae",
     renderer.render(p)
     p.end()
     pix.setDevicePixelRatio(dpr)
+    _PIXMAP_CACHE[cache_key] = pix
     return pix
 
 
