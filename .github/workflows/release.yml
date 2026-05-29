@@ -73,6 +73,13 @@ jobs:
           path: release/*.deb
           if-no-files-found: error
 
+      - name: Generate checksums
+        run: |
+          cd release
+          for f in *.AppImage *.deb; do
+            [ -e "$f" ] && sha256sum "$f" > "$f.sha256"
+          done
+
       - name: Attach to GitHub Release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
@@ -80,6 +87,7 @@ jobs:
           files: |
             release/*.AppImage
             release/*.deb
+            release/*.sha256
           fail_on_unmatched_files: true
 
   build-windows:
@@ -113,6 +121,16 @@ jobs:
           path: release/*-Portable.exe
           if-no-files-found: error
 
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path release -File |
+            Where-Object { $_.Name -match '-(Setup|Portable)\.exe$' } |
+            ForEach-Object {
+              $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+              "$h  $($_.Name)" | Set-Content -Path "$($_.FullName).sha256" -Encoding ascii
+            }
+
       - name: Attach to GitHub Release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
@@ -120,4 +138,5 @@ jobs:
           files: |
             release/*-Setup.exe
             release/*-Portable.exe
+            release/*.sha256
           fail_on_unmatched_files: true
