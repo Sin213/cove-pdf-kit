@@ -606,3 +606,46 @@ def decrypt(src: Path, dst: Path, password: str) -> Path:
     with pikepdf.open(src, password=password) as pdf:
         pdf.save(dst)
     return dst
+
+
+def pages_to_jpeg(
+    pages: list[PageRef],
+    out_dir: Path,
+    *,
+    quality: int = 90,
+    scale: float = 2.0,
+    password: str | None = None,
+) -> list[Path]:
+    """Render ``pages`` to individual JPEG files inside ``out_dir``.
+
+    Returns the list of written file paths in page order.
+    """
+    import pypdfium2 as pdfium
+
+    if not pages:
+        raise ValueError("no pages to export")
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    docs: dict[Path, pdfium.PdfDocument] = {}
+    written: list[Path] = []
+    try:
+        for i, ref in enumerate(pages, start=1):
+            doc = docs.get(ref.source)
+            if doc is None:
+                doc = pdfium.PdfDocument(str(ref.source), password=password)
+                docs[ref.source] = doc
+            page = doc[ref.index]
+            pil = page.render(scale=scale, rotation=ref.rotation).to_pil()
+            if pil.mode != "RGB":
+                pil = pil.convert("RGB")
+            dest = out_dir / f"page_{i:04d}.jpg"
+            pil.save(dest, format="JPEG", quality=quality, optimize=True)
+            written.append(dest)
+    finally:
+        for doc in docs.values():
+            try:
+                doc.close()
+            except Exception:
+                pass
+    return written

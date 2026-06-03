@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from .icons import make_pixmap
-from .pdf_ops import PageRef, read_page_count, write_merged
+from .pdf_ops import PageRef, pages_to_jpeg, read_page_count, write_merged
 from .rendering import ThumbnailService
 from .system import reveal_in_file_manager
 from .widgets import Divider, DropZone, StatusPill, make_button
@@ -289,11 +289,14 @@ class OrganizeView(QWidget):
         row1.addWidget(self.clear_btn)
         row1.addStretch(1)
 
-        self.export_sel_btn = make_button("Export selection…", icon="download", kind="outline")
+        self.export_sel_btn = make_button("Selection…", icon="download")
         self.export_sel_btn.clicked.connect(self._on_export_selection)
-        self.export_btn     = make_button("Export PDF…", icon="download", kind="primary")
+        self.export_jpeg_btn = make_button("JPEG…", icon="download")
+        self.export_jpeg_btn.clicked.connect(self._on_export_jpeg)
+        self.export_btn = make_button("Export PDF…", icon="download")
         self.export_btn.clicked.connect(self._on_export)
         row1.addWidget(self.export_sel_btn)
+        row1.addWidget(self.export_jpeg_btn)
         row1.addWidget(self.export_btn)
         layout.addLayout(row1)
 
@@ -486,6 +489,30 @@ class OrganizeView(QWidget):
         self.show_folder_btn.show()
         self._status_lbl.setText(f"Saved {Path(out_path).name}")
         self.statusMessage.emit(f"Saved {Path(out_path).name} ({len(pages)} pages)", 6000)
+
+    def _on_export_jpeg(self) -> None:
+        pages = self._model.all_pages()
+        if not pages:
+            return
+        first_source = pages[0].source
+        default_dir = str(first_source.with_suffix(""))
+        out_dir = QFileDialog.getExistingDirectory(
+            self, "Choose folder for JPEG export", str(first_source.parent),
+        )
+        if not out_dir:
+            return
+        folder = Path(out_dir) / first_source.stem
+        try:
+            written = pages_to_jpeg(pages, folder)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        self._last_export_path = folder
+        self.show_folder_btn.show()
+        self._status_lbl.setText(f"Exported {len(written)} JPEG files")
+        self.statusMessage.emit(
+            f"Exported {len(written)} pages to {folder.name}/", 6000,
+        )
 
     def _on_show_folder(self) -> None:
         if self._last_export_path is not None:
