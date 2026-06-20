@@ -26,6 +26,7 @@ SURFACE_2   = "#181822"
 SURFACE_3   = "#1f1f2b"
 SURFACE_4   = "#262635"
 BORDER         = "rgba(255,255,255,0.06)"
+WINDOW_EDGE    = "rgba(255, 255, 255, 0.18)"  # visible outer border on frameless QMainWindow
 BORDER_HARD    = "rgba(255,255,255,0.10)"
 BORDER_STRONG  = "rgba(255,255,255,0.16)"
 
@@ -81,6 +82,9 @@ def _stylesheet() -> str:
     QMainWindow, QWidget#cove-root {{
         background: {BG};
         color: {TEXT};
+    }}
+    QMainWindow {{
+        border: 4px solid {WINDOW_EDGE};
     }}
     QWidget#cove-chrome {{
         background: {BG};

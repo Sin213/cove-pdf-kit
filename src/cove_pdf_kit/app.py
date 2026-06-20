@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QSizeGrip,
     QStackedWidget,
     QStatusBar,
     QVBoxLayout,
@@ -246,6 +247,11 @@ class MainWindow(QMainWindow):
         # Frameless window with custom titlebar.
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self._frameless_resizer = FramelessResizer(self)
+        # Visible SE-corner resize grip so the user has a discoverable
+        # affordance to grab. FramelessResizer handles invisible edge drag.
+        self._size_grip = QSizeGrip(self)
+        self._size_grip.setFixedSize(16, 16)
+        self._size_grip.raise_()
         self.setMouseTracking(True)
 
         self._thumbs = ThumbnailService(self)
@@ -263,6 +269,13 @@ class MainWindow(QMainWindow):
     # -----------------------------------------------------------------
     # Layout
     # -----------------------------------------------------------------
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        # Reposition the SE-corner QSizeGrip on every resize so it stays
+        # pinned to the bottom-right of the window.
+        s = self._size_grip.sizeHint()
+        self._size_grip.move(self.width() - s.width(), self.height() - s.height())
 
     def _build_ui(self) -> None:
         central = CoveRoot()
