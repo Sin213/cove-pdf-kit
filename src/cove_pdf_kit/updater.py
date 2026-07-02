@@ -39,6 +39,22 @@ from PySide6.QtCore import QObject, QThread, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
+from .system import child_env
+
+
+def _open_url(url: str) -> None:
+    """Open `url` in the default browser without leaking AppImage env.
+
+    QDesktopServices.openUrl spawns xdg-open with the current environment,
+    which inside an AppImage carries LD_LIBRARY_PATH into the browser and
+    crashes it. Spawn xdg-open ourselves with a scrubbed env in that case.
+    """
+    env = child_env()
+    if env is not None and sys.platform.startswith("linux") and shutil.which("xdg-open"):
+        subprocess.Popen(["xdg-open", url], env=env)
+        return
+    QDesktopServices.openUrl(QUrl(url))
+
 
 @dataclass
 class UpdateInfo:
@@ -312,11 +328,11 @@ class UpdateController(QObject):
         if install_btn is not None and clicked is install_btn:
             self._install(info)
         elif open_btn is not None and clicked is open_btn:
-            QDesktopServices.openUrl(QUrl(info.release_url))
+            _open_url(info.release_url)
 
     def _install(self, info: UpdateInfo) -> None:
         if not info.asset_url or not info.asset_name:
-            QDesktopServices.openUrl(QUrl(info.release_url))
+            _open_url(info.release_url)
             return
         cache = Path(os.path.expanduser(f"~/.cache/{self._cache_subdir}"))
         cache.mkdir(parents=True, exist_ok=True)

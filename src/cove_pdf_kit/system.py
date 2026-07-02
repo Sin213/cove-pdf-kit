@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,23 @@ from pathlib import Path
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
+
+
+def child_env() -> dict | None:
+    """Scrubbed env for spawning external programs from inside an AppImage.
+
+    The AppImage runtime exports LD_LIBRARY_PATH pointing at the bundle's
+    libraries; children like xdg-open and whatever it launches (dolphin,
+    a browser) inherit it, load the bundle's outdated libs, and crash on
+    startup. Returns None outside an AppImage ("inherit unchanged").
+    """
+    if not (os.environ.get("APPDIR") or os.environ.get("APPIMAGE")):
+        return None
+    env = os.environ.copy()
+    for key in ("LD_LIBRARY_PATH", "LD_PRELOAD", "PYTHONHOME", "PYTHONPATH",
+                "QT_PLUGIN_PATH", "QML2_IMPORT_PATH"):
+        env.pop(key, None)
+    return env
 
 
 def reveal_in_file_manager(path: Path) -> bool:
@@ -42,7 +60,7 @@ def reveal_in_file_manager(path: Path) -> bool:
             return True
         target = p if p.is_dir() else p.parent
         if shutil.which("xdg-open"):
-            subprocess.Popen(["xdg-open", str(target)])
+            subprocess.Popen(["xdg-open", str(target)], env=child_env())
             return True
         # Last-resort: let Qt try.
         return QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
